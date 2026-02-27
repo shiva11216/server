@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
+import bcrypt from 'bcryptjs';
 import User from './models/User.js';
 import connectDB from './config/db.js';
 
@@ -13,6 +14,15 @@ const seedAdmin = async () => {
     const adminExists = await User.findOne({ email: 'admin@software.com' });
     
     if (adminExists) {
+      // Detect if the stored password looks like a bcrypt hash (starts with $2)
+      if (!adminExists.password || !adminExists.password.startsWith('$2')) {
+        // force a modification so the pre-save hook will hash it
+        adminExists.password = 'admin123';
+        adminExists.markModified('password');
+        await adminExists.save();
+        console.log('🔄 Detected unhashed admin password; reset and hashed it');
+      }
+
       console.log('✅ Admin user already exists');
       console.log('📧 Email: admin@software.com');
       console.log('🔑 Password: admin123');

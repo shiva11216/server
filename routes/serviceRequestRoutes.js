@@ -7,6 +7,7 @@ import Message from '../models/Message.js';
 import Service from '../models/Service.js';
 import ServiceRequest from '../models/ServiceRequest.js';
 import Project from '../models/Project.js';
+import mongoose from 'mongoose';
 import { ApiResponse } from '../utils/ApiResponse.js';
 import { ApiError } from '../utils/ApiError.js';
 
@@ -81,7 +82,7 @@ router.post(
       await Message.create({
         sender: req.user._id,
         receiver: admin._id,
-        message: `New Service Request: ${service.title}\n\nPrice: $${service.price}\n\nDescription: ${description}\n\nPlease check the Service Requests page to approve or reject.`,
+        message: `New Service Request: ${service.title}\n\nPrice: ₹${service.price}\n\nDescription: ${description}\n\nPlease check the Service Requests page to approve or reject.`,
         project: null,
       });
     }
@@ -107,11 +108,24 @@ router.put(
   protect,
   authorize('admin'),
   asyncHandler(async (req, res) => {
-    const { adminNotes, projectTitle, deadline, assignedEmployees } = req.body;
+    const { adminNotes, projectTitle, deadline, assignedEmployees, budget } = req.body;
+
+    // debug log incoming data
+    console.log('Approve request body:', req.body);
 
     const serviceRequest = await ServiceRequest.findById(req.params.id)
       .populate('client')
       .populate('service');
+
+    console.log('Loaded serviceRequest for approval:', serviceRequest);
+
+    if (!serviceRequest) {
+      throw new ApiError(404, 'Service request not found');
+    }
+
+    if (!serviceRequest.service) {
+      throw new ApiError(400, 'Associated service information is missing');
+    }
 
     if (!serviceRequest) {
       throw new ApiError(404, 'Service request not found');
@@ -121,16 +135,40 @@ router.put(
       throw new ApiError(400, 'Service request has already been processed');
     }
 
-    // Create the project
-    const project = await Project.create({
-      title: projectTitle || `${serviceRequest.service.title} for ${serviceRequest.client.name}`,
-      description: serviceRequest.description,
-      client: serviceRequest.client._id,
-      service: serviceRequest.service._id,
-      assignedEmployees: assignedEmployees || [],
-      status: 'Pending',
-      deadline: deadline || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // Default 30 days
-    });
+    // Validate and prepare inputs for project creation
+    const projectBudget = typeof budget !== 'undefined' ? Number(budget) : (serviceRequest.service.price || 0);
+    if (Number.isNaN(projectBudget) || projectBudget < 0) {
+      throw new ApiError(400, 'Invalid budget provided');
+    }
+
+    // Validate deadline
+    const projectDeadline = deadline ? new Date(deadline) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    if (isNaN(projectDeadline.getTime())) {
+      throw new ApiError(400, 'Invalid deadline provided');
+    }
+
+    // Validate assigned employees (ensure valid ObjectIds)
+    let validAssigned = [];
+    if (Array.isArray(assignedEmployees)) {
+      validAssigned = assignedEmployees.filter((id) => mongoose.Types.ObjectId.isValid(id));
+    }
+
+    // Create the project (wrap to provide clearer errors)
+    let project;
+    try {
+      project = await Project.create({
+        title: projectTitle || `${serviceRequest.service.title} for ${serviceRequest.client.name}`,
+        description: serviceRequest.description,
+        client: serviceRequest.client._id,
+        service: serviceRequest.service._id,
+        budget: projectBudget,
+        assignedEmployees: validAssigned,
+        status: 'Pending',
+        deadline: projectDeadline,
+      });
+    } catch (err) {
+      throw new ApiError(500, `Failed to create project: ${err.message}`);
+    }
 
     // Update service request
     serviceRequest.status = 'Approved';
